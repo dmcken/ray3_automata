@@ -1,0 +1,71 @@
+[tool.hatch.version]
+path = "src/ray3_automata/__init__.py"
+
+[project]
+name = "ray3_automata"
+dynamic = ["version"]
+description = "RACOM RAy microwave backhaul radio automations"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {file = "LICENSE"}
+authors = [
+    {name = "David M.", email = "dontemailme@example.com" }
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Programming Language :: Python :: 3 :: Only",
+]
+dependencies = [
+    "requests",
+]
+
+[project.optional-dependencies]
+dev = ["check-manifest"]
+test = ["pytest", "requests-mock", "coverage"]
+
+[project.urls]
+"Homepage"    = "https://github.com/dmcken/ray3_automata"
+"Bug Reports" = "https://github.com/dmcken/ray3_automata/issues"
+"Source"      = "https://github.com/dmcken/ray3_automata"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.2",
+    "pytest-cov>=7.1.0",
+    "requests-mock>=1.12.1",
+    "ruff>=0.16.5",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "C4",   # flake8-comprehensions
+    "RUF",  # ruff-specific rules
+    "FA",   # flake8-future-annotations
+    "LOG",  # flake8-logging
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
