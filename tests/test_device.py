@@ -7,11 +7,26 @@ import pytest
 import requests
 
 from ray3_automata import exceptions
-from ray3_automata.device import Ray3Device, is_ray3_device
+from ray3_automata.device import (
+    Ray3Device,
+    is_ray3_device,
+    parse_cli_cnf_show,
+    parse_cli_info_station,
+)
 
 from .conftest import bootstrap_page, response_ack
 
 BASE = 'http://192.0.2.1/'
+
+
+def done_response(value_assignment: str, run_btn_id: str = 'cli__run__btn') -> str:
+    '''Wraps a `<var>.value='...';` assignment with the run-button
+    re-enable marker _run_tool() actually keys off - see its docstring
+    for why presence of a value alone was never enough.'''
+    return (
+        f"$('#{run_btn_id}').removeClass('Wt-disabled');\n"
+        f"var j3=Wt4_4_0.$('cli__screen');\n{value_assignment}"
+    )
 
 
 class TestIsRay3Device:
@@ -149,11 +164,17 @@ class TestRunCli:
             BASE,
             [
                 {'text': response_ack(1004, _programs_expanded_page())},  # expand Programs
-                {'text': response_ack(1005)},  # click Run - canvas-redraw noise, no result yet
-                {'text': response_ack(1006)},  # poll - still nothing
-                {'text': response_ack(1007, "var j1=Wt4_4_0.$('cli__screen');\n"
-                    "j1.value='>> cli_info_link\\ncli_info_link: Link status: up\\n\\n"
-                    "RETURNED VALUE: 0\\n';")},  # poll - result lands
+                # Click response - just echoes the command, button disabled.
+                {'text': response_ack(1005, "var j1=Wt4_4_0.$('cli__screen');\n"
+                    "j1.value='>> cli_info_link\\n';")},
+                # Poll - still running, output incomplete, button still disabled.
+                {'text': response_ack(1006, "var j2=Wt4_4_0.$('cli__screen');\n"
+                    "j2.value='>> cli_info_link\\ncli_info_lin';")},
+                # Poll - done: button re-enabled, final value present.
+                {'text': response_ack(1007, done_response(
+                    "j3.value='>> cli_info_link\\ncli_info_link: Link status: up\\n\\n"
+                    "RETURNED VALUE: 0\\n';"
+                ))},
             ],
         )
 
@@ -161,18 +182,15 @@ class TestRunCli:
 
         assert output == '>> cli_info_link\ncli_info_link: Link status: up\n\nRETURNED VALUE: 0\n'
 
-    def test_second_call_only_returns_new_output(self, requests_mock):
+    def test_second_call_does_not_reuse_first_calls_output(self, requests_mock):
         dev = self._logged_in_device(requests_mock)
         requests_mock.post(
             BASE,
             [
                 {'text': response_ack(1004, _programs_expanded_page())},
-                {'text': response_ack(1005)},
-                {'text': response_ack(1006, "var j1=Wt4_4_0.$('cli__screen');\n"
-                    "j1.value='>> first\\n';")},
-                {'text': response_ack(1007)},  # 2nd call's click
-                {'text': response_ack(1008, "var j2=Wt4_4_0.$('cli__screen');\n"
-                    "j2.value='>> first\\n>> second\\n';")},
+                {'text': response_ack(1005, done_response("j1.value='>> first\\n';"))},
+                {'text': response_ack(1006)},  # 2nd call's click
+                {'text': response_ack(1007, done_response("j2.value='>> second\\n';"))},
             ],
         )
 
@@ -206,3 +224,104 @@ class TestRunCli:
 
         with pytest.raises(exceptions.DeviceUnavailable):
             dev.run_cli('cli_help')
+
+    def test_get_config_parses_cnf_show(self, requests_mock):
+        dev = self._logged_in_device(requests_mock)
+        cnf_show_output = (
+            ">> cli_cnf_show\\n"
+            "#\\n#configuration bridge\\n"
+            'SVC_STATION_NAME="EXAMPLE-STATION"\\n'
+            'SVC_STATION_LOCATION="EXAMPLE-SITE"\\n'
+            'SVC_IP="192.0.2.50"\\n'
+            "SVC_MASK_LEN=29\\n"
+            "#\\n#configuration radio\\n"
+            "RADIO_TX_CHAN=24190000\\n"
+            "RADIO_ANT_GAIN=10.00\\n"
+            "\\nRETURNED VALUE: 0\\n"
+        )
+        requests_mock.post(
+            BASE,
+            [
+                {'text': response_ack(1004, _programs_expanded_page())},
+                {'text': response_ack(1005, done_response(f"j3.value='{cnf_show_output}';"))},
+            ],
+        )
+
+        config = dev.get_config()
+
+        assert config['SVC_STATION_NAME'] == 'EXAMPLE-STATION'
+        assert config['SVC_STATION_LOCATION'] == 'EXAMPLE-SITE'
+        assert config['SVC_IP'] == '192.0.2.50'
+        assert config['SVC_MASK_LEN'] == '29'
+        assert config['RADIO_TX_CHAN'] == '24190000'
+        assert config['RADIO_ANT_GAIN'] == '10.00'
+
+    def test_get_system_info_parses_info_station(self, requests_mock):
+        dev = self._logged_in_device(requests_mock)
+        info_station_output = (
+            ">> cli_info_station\\n"
+            "Product code: RAy3-EXAMPLE\\n"
+            "Serial number: 1234567890\\n"
+            "HW type: 1.0\\n"
+            "Band index: U\\n"
+            "Mode S: off\\n"
+            "Radio SW version: 1.0.0.0\\n"
+            "Firmware version: 2.0.0.0 \\n"
+            "Firmware name: bma_example\\n"
+            "TX polarization: horizontal\\n"
+            "MAC adress: 00:00:00:00:00:00\\n"
+            "Time: 2026-01-01 00:00:00+00:00 UTC\\n"
+            "\\nRETURNED VALUE: 0\\n"
+        )
+        requests_mock.post(
+            BASE,
+            [
+                {'text': response_ack(1004, _programs_expanded_page())},
+                {'text': response_ack(1005, done_response(f"j3.value='{info_station_output}';"))},
+            ],
+        )
+
+        info = dev.get_system_info()
+
+        assert info.product_code == 'RAy3-EXAMPLE'
+        assert info.serial_number == '1234567890'
+        assert info.mac_address == '00:00:00:00:00:00'
+        assert info.time == '2026-01-01 00:00:00+00:00 UTC'
+
+
+class TestParseCliCnfShow:
+    def test_parses_quoted_and_bare_values(self):
+        config = parse_cli_cnf_show(
+            '>> cli_cnf_show\n'
+            '#\n#configuration bridge\n'
+            'SVC_STATION_NAME="EXAMPLE-STATION"\n'
+            'SVC_MASK_LEN=29\n'
+            'RADIO_ANT_GAIN=10.00\n'
+            '\nRETURNED VALUE: 0\n'
+        )
+
+        assert config == {
+            'SVC_STATION_NAME': 'EXAMPLE-STATION',
+            'SVC_MASK_LEN': '29',
+            'RADIO_ANT_GAIN': '10.00',
+        }
+
+    def test_ignores_comments_and_blank_lines(self):
+        config = parse_cli_cnf_show('#comment\n\nKEY="value"\n')
+        assert config == {'KEY': 'value'}
+
+
+class TestParseCliInfoStation:
+    def test_parses_known_fields(self):
+        info = parse_cli_info_station(
+            '>> cli_info_station\n'
+            'Product code: RAy3-EXAMPLE\n'
+            'Serial number: 1234567890\n'
+            'MAC adress: 00:00:00:00:00:00\n'
+            '\nRETURNED VALUE: 0\n'
+        )
+
+        assert info.product_code == 'RAy3-EXAMPLE'
+        assert info.serial_number == '1234567890'
+        assert info.mac_address == '00:00:00:00:00:00'
+        assert info.hw_type == ''  # not present in this input

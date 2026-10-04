@@ -10,14 +10,15 @@ replies with raw JavaScript that patches the live page - there is no
 clean data endpoint to call, so this module drives the same protocol a
 browser does.
 
-Confirmed live (via a captured HAR of a real session against a RAy
+Confirmed live (via two captured HARs of real sessions against a RAy
 answering as a backhaul radio, admin level): login, and running the
-page's own built-in CLI tool (Tools > CLI) - `cli_help` and
-`cli_info_link` were both exercised and their exact output captured.
-`cli_help` itself lists the full command catalogue (see
-KNOWN_CLI_COMMANDS below) - only `cli_help`/`cli_info_link` have a
-captured, confirmed-live response shape; the rest are the device's own
-documentation of what exists, not yet exercised by this module.
+page's own built-in CLI tool (Tools > CLI) - `cli_help`, `cli_info_link`,
+`cli_cnf_show` and `cli_info_station` were all exercised and their
+exact output captured; `get_config()`/`get_system_info()` parse the
+latter two into a dict/dataclass. `cli_help` itself lists the full
+command catalogue (see KNOWN_CLI_COMMANDS below) - the rest of it is
+the device's own documentation of what exists, not yet independently
+exercised by this module.
 
 Protocol, confirmed live from the HAR:
 - GET / (unauthenticated) returns the bootstrap HTML. Two things in it
@@ -66,36 +67,47 @@ Protocol, confirmed live from the HAR:
 - The CLI tool's own "Run" button (`cli__run__btn`) is a click like any
   other; the command name goes in the `cli__command` field already
   present on that page (the GUI actually uses a second, custom-command
-  field - `cli__custom_commands` - confirmed always empty in this
-  capture; command selection happens by setting `cli__command`
+  field - `cli__custom_commands` - confirmed always empty in both
+  captures; command selection happens by setting `cli__command`
   directly). The result doesn't come back on the click's own response -
-  it shows up on a *later* poll, as a direct DOM write:
-  `<var>=Wt4_4_0.$('cli__screen'); <var>.value='<output, JS-escaped>';`
-  - confirmed live needing exactly 2 polls after the click in this
-  capture, but nothing in the protocol guarantees that count, so
-  run_cli() just keeps polling (bounded by a timeout) until it sees
-  that assignment.
+  that just echoes the command back (e.g. `cli__screen` set to
+  '>> cli_info_station\\n' alone) and disables `cli__run__btn` /
+  enables `cli__stop__btn` - confirmed live that a slower command's
+  real output can itself still be incomplete on an intervening poll
+  (`cli_info_station`'s own output was cut off mid-string on its first
+  poll), so an output's mere presence is never enough to trust it as
+  final. The one reliable completion signal is `run_btn_id` itself
+  being re-enabled - confirmed live as the literal, non-string-nested
+  text `$('#cli__run__btn').removeClass('Wt-disabled')` - only a poll
+  carrying that marker has _run_tool() trust `cli__screen`'s value in
+  that same response as the finished result. Confirmed live too: a
+  command's own output never accumulates with a previous command's -
+  `cli_cnf_show` finished in a single poll, `cli_info_station` right
+  after it took two, and its final value was its own output alone, not
+  `cli_cnf_show`'s output plus its own.
 
 Not confirmed live, inferred by (strong) analogy:
-- ping() - the HAR's capture window started with the Tools > Ping page
-  already open, so the actual `menuanchor__ping` click was never
-  observed - only the identical click-then-poll-for-`ping__screen`
-  cycle this module reuses for it. The anchor id is a guess, consistent
-  with the naming of every other confirmed menu anchor.
-- Every CLI command beyond `cli_help`/`cli_info_link` in
-  KNOWN_CLI_COMMANDS - these are the device's own listing of what
-  exists (verbatim from a live `cli_help` call), not independently
-  verified output shapes. run_cli() will happily run any of them; this
-  module just doesn't parse their output into anything structured yet.
+- ping() - neither capture's window included the actual
+  `menuanchor__ping` click, only the identical click-then-poll-for-
+  `ping__screen` cycle this module reuses for it (confirmed live for
+  CLI). The anchor id is a guess, consistent with the naming of every
+  other confirmed menu anchor.
+- Every CLI command beyond `cli_help`/`cli_info_link`/`cli_cnf_show`/
+  `cli_info_station` in KNOWN_CLI_COMMANDS - these are the device's own
+  listing of what exists (verbatim from a live `cli_help` call), not
+  independently verified output shapes. run_cli() will happily run any
+  of them; this module just doesn't parse their output into anything
+  structured yet.
 
-Sensitive data warning: `cli_cnf_show`/`cli_cnf_backup_get` are
-documented (by the device's own cli_help) to include secrets (SNMP
-community string, user credentials) - never log/print their output
-wholesale once something actually calls them.
+Sensitive data warning: `cli_cnf_show` is confirmed live to return
+real secrets in plain text - this author's own capture included a live
+SNMP community string and a USB-WiFi passphrase - never log/print its
+output, or get_config()'s parsed dict, wholesale.
 '''
 from __future__ import annotations
 
 # System imports
+import dataclasses
 import logging
 import re
 import time
@@ -202,6 +214,94 @@ def _unescape_js_string(raw: str) -> str:
     return ''.join(out)
 
 
+# Matches one cli_cnf_show line - confirmed live shape: shell-style
+# KEY="value" (string) or KEY=value (bare int/decimal/keyword), one
+# setting per line, under `#`-prefixed section-header comments.
+_CNF_LINE_RE = re.compile(r'^([A-Z][A-Z0-9_]*)=(?:"([^"]*)"|(\S*))$')
+
+
+def parse_cli_cnf_show(raw: str) -> dict[str, str]:
+    '''Parse cli_cnf_show's own output (see Ray3Device.get_config())
+    into a flat {key: value} dict.
+
+    Every value is kept as a plain string - the dump mixes quoted
+    strings, bare integers (e.g. RADIO_TX_CHAN=24190000) and bare
+    decimals (e.g. RADIO_ANT_GAIN=10.00) with no reliable way to tell a
+    deliberately-string value from a numeric-looking one just by
+    format, so this doesn't guess at per-key types - cast whichever
+    specific keys you need yourself.
+
+    Sensitive data warning: the real output this was confirmed against
+    includes SNMP_COMMUNITY_STRING and USB_WIFI_PASSPHRASE in plain
+    text - don't log/print the result wholesale either.
+    '''
+    config = {}
+    for line in raw.splitlines():
+        match = _CNF_LINE_RE.match(line.strip())
+        if match is None:
+            continue
+        key, quoted, bare = match.groups()
+        config[key] = quoted if quoted is not None else bare
+    return config
+
+
+@dataclasses.dataclass
+class Ray3StationInfo:
+    '''Structured view of cli_info_station's own output (see
+    Ray3Device.get_system_info()).'''
+    product_code: str
+    serial_number: str
+    hw_type: str
+    band_index: str
+    mode_s: str
+    radio_sw_version: str
+    firmware_version: str
+    firmware_name: str
+    tx_polarization: str
+    mac_address: str
+    time: str
+
+
+# cli_info_station's own label -> Ray3StationInfo field name.
+_INFO_STATION_FIELD_MAP = {
+    'Product code': 'product_code',
+    'Serial number': 'serial_number',
+    'HW type': 'hw_type',
+    'Band index': 'band_index',
+    'Mode S': 'mode_s',
+    'Radio SW version': 'radio_sw_version',
+    'Firmware version': 'firmware_version',
+    'Firmware name': 'firmware_name',
+    'TX polarization': 'tx_polarization',
+    # Confirmed live: the device's own output really does spell this
+    # "adress" - matched verbatim, not a typo to "fix" here.
+    'MAC adress': 'mac_address',
+    'Time': 'time',
+}
+
+
+def parse_cli_info_station(raw: str) -> Ray3StationInfo:
+    '''Parse cli_info_station's own output (confirmed live shape: one
+    "Label: value" line per field) into a Ray3StationInfo. A label this
+    module doesn't recognize is ignored rather than raising - this
+    output's exact field set may vary by firmware version, and nothing
+    here needs it to be exhaustive, only the fields _INFO_STATION_
+    FIELD_MAP already knows how to name.
+    '''
+    values = {}
+    for line in raw.splitlines():
+        label, sep, value = line.partition(':')
+        if not sep:
+            continue
+        field = _INFO_STATION_FIELD_MAP.get(label.strip())
+        if field:
+            values[field] = value.strip()
+
+    return Ray3StationInfo(**{
+        field: values.get(field, '') for field in Ray3StationInfo.__dataclass_fields__
+    })
+
+
 def is_ray3_device(management_ip: str, timeout: int = 10, use_ssl: bool = False) -> bool:
     '''Pre-auth identification - True if `management_ip` answers like a
     RAy (its page <title> is confirmed live to carry TITLE_MARKER on
@@ -265,8 +365,6 @@ class Ray3Device:
         self._page_id = 1
         self._last_page = ''
         self._revealed = set()
-        self._cli_screen = ''
-        self._ping_screen = ''
 
     def _base_url(self) -> str:
         scheme = 'https' if self._use_ssl else 'http'
@@ -525,10 +623,29 @@ class Ray3Device:
         return body
 
     def _run_tool(
-        self, page_body: str, run_btn_id: str, screen_field: str, fields: dict, last_screen: str,
+        self, page_body: str, run_btn_id: str, screen_field: str, fields: dict,
     ) -> str:
         '''Shared click-then-poll-for-result cycle behind run_cli() and
         ping() - see module docstring's Protocol section.
+
+        Confirmed live (second capture, running cli_cnf_show then
+        cli_info_station back to back): the click's own response
+        already sets `screen_field` to just the echoed command (e.g.
+        '>> cli_info_station\\n') before any real output exists, and a
+        slower command's output can itself arrive incomplete across
+        more than one poll, still being written - confirmed live
+        ('cli_info_station's own output was still mid-string on its
+        first poll, complete only on the next one that also re-enabled
+        `run_btn_id`). So an output's own presence is never enough; the
+        one reliable "this is the final value" signal is `run_btn_id`
+        itself being re-enabled (`$('#<run_btn_id>').removeClass(
+        'Wt-disabled')` - confirmed live, a plain string in the
+        response, not nested in a JS string literal so needing no
+        unescaping) - only a poll response carrying that marker has
+        this call trust `screen_field`'s value as final. Also confirmed
+        live: back-to-back commands' outputs don't accumulate - each
+        one's final value is that command's own output alone, not the
+        previous command's output plus the new one.
 
         Args:
             page_body: the page content the tool's run/send button
@@ -539,9 +656,6 @@ class Ray3Device:
                 (e.g. 'cli__screen', 'ping__screen').
             fields: the tool's own form fields for this run (e.g.
                 {'cli__command': 'cli_info_link'}).
-            last_screen: that field's last known value - sent back as
-                part of the click, matching what a real browser does
-                (the widget's current value, not yet the new result).
 
         Raises:
             exceptions.DeviceUnavailable: `run_btn_id` wasn't in
@@ -555,9 +669,14 @@ class Ray3Device:
                 f"Could not find '{run_btn_id}' - wrong page loaded?"
             )
 
-        self._post_update(signal, {
+        done_marker = f"$('#{run_btn_id}').removeClass('Wt-disabled')"
+        result_re = re.compile(
+            r"\$\('" + re.escape(screen_field) + r"'\);\s*\n?\s*\w+\.value='((?:[^'\\]|\\.)*)';"
+        )
+
+        response = self._post_update(signal, {
             **fields,
-            screen_field: last_screen,
+            screen_field: '',
             'focus': run_btn_id,
             'tid': run_btn_id,
             'type': 'click',
@@ -568,15 +687,13 @@ class Ray3Device:
             'button': '1', 'charCode': '0',
         })
 
-        result_re = re.compile(
-            r"\$\('" + re.escape(screen_field) + r"'\);\s*\n?\s*\w+\.value='((?:[^'\\]|\\.)*)';"
-        )
         deadline = time.monotonic() + self._poll_timeout_s
         while time.monotonic() < deadline:
+            if done_marker in response:
+                match = result_re.search(response)
+                if match is not None:
+                    return _unescape_js_string(match.group(1))
             response = self._post_update('poll')
-            match = result_re.search(response)
-            if match is not None:
-                return _unescape_js_string(match.group(1))
             time.sleep(self._poll_interval_s)
 
         raise exceptions.CommandTimeout(
@@ -585,15 +702,13 @@ class Ray3Device:
 
     def run_cli(self, command: str) -> str:
         '''Run one command via the device's own Tools > CLI page and
-        return its output, verbatim - confirmed live for `cli_help`/
-        `cli_info_link`; see KNOWN_CLI_COMMANDS for the device's own
-        full catalogue, and the module docstring's sensitive-data
-        warning before calling `cli_cnf_show`/`cli_cnf_backup_get`.
-
-        Output accumulates in the page's own screen buffer across
-        calls (confirmed live - a second command's result is appended
-        after the first, not a fresh screen) - this returns only the
-        new output appended by this call, not the whole buffer.
+        return its output, verbatim - confirmed live for `cli_help`,
+        `cli_info_link`, `cli_cnf_show` and `cli_info_station`; see
+        KNOWN_CLI_COMMANDS for the device's own full catalogue, and the
+        module docstring's sensitive-data warning before calling
+        `cli_cnf_show`/`cli_cnf_backup_get` (confirmed live: cli_cnf_show
+        really does include live secrets - the SNMP community string,
+        a USB-WiFi passphrase - never log/print its output wholesale).
 
         Args:
             command: One of KNOWN_CLI_COMMANDS' keys, or any other
@@ -608,14 +723,40 @@ class Ray3Device:
                 this device/firmware.
         '''
         page_body = self._reveal(['menuanchor__programs', 'menuanchor__cli'])
-        full_screen = self._run_tool(
+        return self._run_tool(
             page_body, 'cli__run__btn', 'cli__screen',
             {'cli__cli_commands': '0', 'cli__command': command, 'cli__custom_commands': ''},
-            self._cli_screen,
         )
-        new_output = full_screen[len(self._cli_screen):]
-        self._cli_screen = full_screen
-        return new_output
+
+    def get_config(self) -> dict[str, str]:
+        '''This device's full configuration (run_cli('cli_cnf_show'),
+        parsed) - confirmed live, including real station identification
+        (SVC_STATION_NAME/SVC_STATION_LOCATION) and IP addressing
+        (SVC_IP/SVC_MASK_LEN/SVC_GW).
+
+        Sensitive data warning: see module docstring - the parsed dict
+        includes real secrets (SNMP_COMMUNITY_STRING, USB_WIFI_
+        PASSPHRASE confirmed live), never log/print it wholesale.
+
+        Raises:
+            exceptions.CommandTimeout: no result within the poll
+                timeout.
+            exceptions.DeviceUnavailable: the CLI page/button couldn't
+                be found.
+        '''
+        return parse_cli_cnf_show(self.run_cli('cli_cnf_show'))
+
+    def get_system_info(self) -> Ray3StationInfo:
+        '''This device's own identification (run_cli('cli_info_station'),
+        parsed) - confirmed live.
+
+        Raises:
+            exceptions.CommandTimeout: no result within the poll
+                timeout.
+            exceptions.DeviceUnavailable: the CLI page/button couldn't
+                be found.
+        '''
+        return parse_cli_info_station(self.run_cli('cli_info_station'))
 
     def ping(self, destination: str, count: int = 5, size: int = 56) -> str:
         '''Run a ping from the device itself via its Tools > Ping page
@@ -640,18 +781,14 @@ class Ray3Device:
                 be found.
         '''
         page_body = self._reveal(['menuanchor__programs', 'menuanchor__ping'])
-        full_screen = self._run_tool(
+        return self._run_tool(
             page_body, 'ping__send__btn', 'ping__screen',
             {
                 'ping__destination': destination,
                 'ping__count': str(count),
                 'ping__size_by': str(size),
             },
-            self._ping_screen,
         )
-        new_output = full_screen[len(self._ping_screen):]
-        self._ping_screen = full_screen
-        return new_output
 
     def logout(self) -> None:
         '''Log out of the device - confirmed live (the captured session

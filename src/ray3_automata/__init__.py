@@ -9,17 +9,23 @@ from .device import (
     KNOWN_CLI_COMMANDS,
     TITLE_MARKER,
     Ray3Device,
+    Ray3StationInfo,
     is_ray3_device,
+    parse_cli_cnf_show,
+    parse_cli_info_station,
 )
 
 # Versions should comply with PEP 440:
 # https://www.python.org/dev/peps/pep-0440/
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     'KNOWN_CLI_COMMANDS',
     'TITLE_MARKER',
     'Ray3Device',
+    'Ray3StationInfo',
     'exceptions',
     'is_ray3_device',
+    'parse_cli_cnf_show',
+    'parse_cli_info_station',
 ]
