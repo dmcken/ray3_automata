@@ -50,7 +50,9 @@ class TestLoginHttp:
             BASE,
             [
                 {'text': response_ack(1002)},  # the bootstrap 'load' call
-                {'text': response_ack(1003, '<a id="logout_button" '
+                {'text': response_ack(1003, '<a id="menuanchor__programs" '
+                    'onclick="Wt._p_.update(o,\'sPROGRAMS1\',e,true);">Programs</a>'
+                    '<a id="logout_button" '
                     'onclick="Wt._p_.update(o,\'sLOGOUT1\',e,true);">Logout</a>')},
             ],
         )
@@ -68,8 +70,10 @@ class TestLoginHttp:
             BASE,
             [
                 {'text': response_ack(2)},
-                # Still carries the login form -> treated as rejected.
-                {'text': response_ack(3, '<input id="login_username"/>')},
+                # Confirmed live, verbatim device rejection message.
+                {'text': response_ack(
+                    3, 'The username or password you have entered is incorrect.',
+                )},
             ],
         )
         dev = Ray3Device('192.0.2.1')
@@ -91,6 +95,25 @@ class TestLoginHttp:
         with pytest.raises(exceptions.DeviceUnavailable):
             dev.login_http('correct-password', 'admin')
 
+    def test_unrecognized_response_is_device_unavailable(self, requests_mock):
+        '''Confirmed live: a "Maximum number of connections reached"
+        response is neither the success nor the failure marker - this
+        must not be silently treated as a successful login.'''
+        requests_mock.get(BASE, text=bootstrap_page())
+        requests_mock.post(
+            BASE,
+            [
+                {'text': response_ack(2)},
+                {'text': response_ack(
+                    3, 'Maximum number of connections reached, please try again later.',
+                )},
+            ],
+        )
+        dev = Ray3Device('192.0.2.1')
+
+        with pytest.raises(exceptions.DeviceUnavailable):
+            dev.login_http('correct-password', 'admin')
+
 
 class TestLogin:
     def test_falls_back_to_alternate_password(self, requests_mock):
@@ -99,9 +122,13 @@ class TestLogin:
             BASE,
             [
                 {'text': response_ack(2)},  # load, 1st attempt
-                {'text': response_ack(3, '<input id="login_username"/>')},  # rejected
+                {'text': response_ack(
+                    3, 'The username or password you have entered is incorrect.',
+                )},  # rejected
                 {'text': response_ack(4)},  # load, 2nd attempt
-                {'text': response_ack(5, '<a id="logout_button" '
+                {'text': response_ack(5, '<a id="menuanchor__programs" '
+                    'onclick="Wt._p_.update(o,\'sPROGRAMS1\',e,true);">Programs</a>'
+                    '<a id="logout_button" '
                     'onclick="Wt._p_.update(o,\'sLOGOUT1\',e,true);">Logout</a>')},
             ],
         )
@@ -117,7 +144,9 @@ class TestLogin:
             BASE,
             [
                 {'text': response_ack(2)},
-                {'text': response_ack(3, '<input id="login_username"/>')},
+                {'text': response_ack(
+                    3, 'The username or password you have entered is incorrect.',
+                )},
             ],
         )
         dev = Ray3Device('192.0.2.1')

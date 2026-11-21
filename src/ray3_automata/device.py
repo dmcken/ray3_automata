@@ -189,7 +189,11 @@ _LOGIN_SIGNAL_RE = re.compile(r'id="login_button"\s+name="signal=(\w+)"')
 _ONCLICK_SIGNAL_TEMPLATE = r'id="{}"[^>]*onclick="[^"]*Wt\._p_\.update\(o,\\?\'(\w+)\\?\''
 _RESPONSE_ACK_RE = re.compile(r'^Wt\._p_\.response\((\d+)\);')
 _SESSION_URL_RE = re.compile(r"Wt\._p_\.setSessionUrl\('([^']*wtd=([^&']+)[^']*)'\)")
-_LOGIN_FORM_PRESENT_RE = re.compile(r'id="login_username"')
+# Confirmed live, verbatim: the device's own rejection message, shown
+# in-page (not a distinct HTTP status - the response is still 200).
+_LOGIN_FAILED_RE = re.compile(
+    r'The username or password you have entered is incorrect\.'
+)
 
 
 def _unescape_js_string(raw: str) -> str:
@@ -509,8 +513,19 @@ class Ray3Device:
             },
         )
 
-        if _LOGIN_FORM_PRESENT_RE.search(response):
+        if _LOGIN_FAILED_RE.search(response):
             raise exceptions.WrongPassword(f"Login to RAy '{self._mgmt_ip}' failed")
+        if 'menuanchor__programs' not in response:
+            # Neither the confirmed success marker nor the confirmed
+            # failure message - an unrecognized response shape (a
+            # different firmware version's menu tree, a maintenance
+            # page, ...). Raising DeviceUnavailable here rather than
+            # silently treating it as a successful login, which it
+            # might well not be.
+            raise exceptions.DeviceUnavailable(
+                f"Unrecognized response logging in to RAy '{self._mgmt_ip}' - "
+                "neither a known success nor failure marker was found"
+            )
 
         self._curr_username = curr_user
         self._curr_password = curr_pw
